@@ -1,0 +1,372 @@
+ГЛАВНАЯ, СДЕЛАЙТЕ ВСЁ ЧТО ЗДЕСЬ НАПИСАНО ПЕРЕД РАБОТОЙ
+
+nano /etc/apt/sources.list - перед скачиванием пакетов закомментируйте первую строку
+
+nano /etc/resolv.conf - также для скачивания пакета необходимо установить DNS-сервер, ставим nameserver 8.8.8.8 (остальные строки закомментируйте).
+
+❗ После настройки DNS-сервера на HQ-SRV на остальных машинах нужно поставить nameserver <ip-адрес HQ-SRV> ❗
+
+❗❗КРОМЕ ISP, НА iSP RESOLV.CONF НЕ МЕНЯЕМ❗❗
+
+apt update - обновление пакетов. Некоторые пакеты не будут скачиваться без обновления (например, bind9). Если вы видите, что система не устанавливает пакет и просит его обновить, сделайте это.
+
+Меняем часовой пояс на каждой из машин
+
+timedatectl set-timezone Asia/Tomsk
+
+Если нужно прервать процесс то для начала: ps aux - выводит все процессы
+
+kill -9 {номер процесса}
+
+HQ-RTR
+apt install vlan
+modprobe 8021q
+echo 8021q >> /etc/modules
+
+timedatectl set-timezone Asia/Tomsk
+Команда для проверки: timedatectl
+
+❗❗❗ После изменения конфигурации интерфейсов ВСЕГДА перезапускайте службу networking ❗❗❗
+
+systemctl restart networking
+
+ISP
+auto lo
+iface lo inet loopback
+
+allow-hotplug ens192
+iface ens192 inet dhcp
+
+auto ens224
+iface ens224 inet static
+address 172.16.1.1/28
+
+auto ens256
+iface ens256 inet static
+address 172.16.2.1/28
+
+HQ-RTR
+
+auto ens192
+iface ens192 inet static
+address 172.16.1.2/28
+gateway 172.16.1.1
+
+auto ens224
+iface ens224 inet static
+address 192.168.100.1/27
+
+auto ens224:1
+iface ens224:1 inet static
+address 192.168.200.1/28
+
+auto ens224:2
+iface ens224:2 inet static
+address 192.168.99.99/29
+
+auto ens224.100
+iface ens224.100 inet manual
+vlan-raw-device ens224
+
+auto ens224.200
+iface ens224.200 inet manual
+vlan-raw-device ens224:1
+
+auto ens224.999
+iface ens224.999 inet manual
+vlan-raw-device ens224:2
+
+allow-hotplug tun1
+iface tun1 inet tunnel
+address 10.10.0.1
+netmask 255.255.255.252
+mode gre
+local 172.16.1.2
+endpoint 172.16.2.2
+ttl 64
+
+BR-RTR
+
+auto ens192
+iface ens192 inet static
+address 172.16.2.2/28
+gateway 172.16.2.1
+
+auto ens224
+iface ens224 inet static
+address 192.168.1.1/28
+
+allow-hotplug tun1
+iface tun1 inet tunnel
+address 10.10.0.2
+netmask 255.255.255.252
+mode gre
+local 172.16.2.2
+endpoint 172.16.1.2
+ttl 64
+
+HQ-SRV
+
+auto ens192
+iface ens192 inet static
+address 192.168.100.2/27
+gateway 192.168.100.1
+
+BR-SRV
+
+auto ens192
+iface ens192 inet static
+address 192.168.1.2/28
+gateway 192.168.1.1
+
+HQ-CLI
+su root
+#Сначала выключаем Network Manager
+systemctl stop NetworkManager
+systemctl disable NetworkManager
+systemctl mask NetworkManager
+#После прописываем конфигурацию интерфейса ( networking перезапуститьсможете только после настройки DHCP)
+auto ens192
+iface ens192 inet dhcp
+
+hostnamectl set-hostname <имя хоста>
+newgrp
+#Название будет соответвовать названию машины
+
+Правило 
+ПРОПИСЫВАЕМ ПРАВИЛО НА ISP, HQ-RTR и BR-RTR
+Добавим правило для NAT в nftables.conf
+nano /etc/nftables.conf
+Указываем интерфейс, смотрящий в сторону Интернета
+
+table inet nat {
+    chain POSTROUTING {
+    type nat hook postrouting priority srcnat;
+    oifname "ens192" masquerade
+    }
+}
+
+systemctl enable nftables - добавление службы в автозапуск
+systemctl start nftables - включение службы
+
+Переадресация пакетов
+❗❗❗ВКЛЮЧАЕМ НА ISP, HQ-RTR, BR-RTR❗❗❗
+nano /etc/sysctl.conf
+Раскомменчиваем строку
+
+net.ipv4.ip_forwaed=1
+
+sysctl -p применение настройки
+
+Перезгружайте виртуалку, если не заработало
+
+HQ-SRV и BR-SRV
+useradd sshuser -u 2026 -U - создание пользователя
+passwd sshuser - задать пароль пользователю
+вводим пароль пользователя - P@ssw0rd
+повторяем ввод пароля - P@ssw0rd
+
+HQ-RTR и BR-RTR
+Создадим пользователя net_admin и зададим ему пароль P@ssw0rd
+useradd net_admin
+passwd net_admin
+
+HQ-RTR и BR-RTR
+пишем  visudo
+находим сторчку # User privilege specification  и под ней добавляем
+net_admin  ALL=(ALL:ALL)  ALL
+sshuser  ALL=(ALL:ALL)  ALL
+
+SSH ( HQ-SRV и BR-SRV )
+Создадим файл баннера, допустим "banner_ssh" и напишем текст ( можно написать без =, Authorized Access Only )
+nano /etc/banner_ssh
+
+Пропишем выделенные параметры в конфигурационный файл
+nano /etc/ssh/sshd_config
+
+Port 2026
+AllowUsers sshuser
+Banner /etc/banner_ssh
+MaxAuthTries 2
+
+После, перезапускаем службу SSH.
+systemctl restart sshd
+
+Проверка SSH ( HQ-RTR )
+Подключаемся с HQ-RTR указав имя созданного пользователя, ip-адрес HQ-SRV и порт 2026. Далее вводим пароль.
+Далее прописываем sudo su, если пароль не запросился и вы вошли под root, то всё сделано правильно
+ssh sshuser@192.168.100.2 -p 2026
+
+HQ-RTR, так же на BR-RTR
+
+Устанавливаем, при необходимости, frr.
+apt install frr -y
+
+Далее, включаем OSPF, поменяв значение "no" на "yes".
+nano /etc/frr/daemons
+
+ospfd=no , сделать ospfd=yes
+
+Конец общего блока
+
+Добавляем frr в автозагрузку.
+systemctl enable frr
+
+Перезагружаем frr.
+systemctl restart frr
+
+Зайдем в frr, введя команду vtysh. Далее, переходим в conf t, пропишем ip forwarding и затем в router ospf. Прописываем следующие команды:(Команды надо вписывать поочередно)
+
+passive-interface default
+network 192.168.100.0/27 area 0
+network 192.168.200.0/28 area 0
+network 10.10.0.0/30 area 0
+area 0 authentication
+exit
+interface tun1
+no ip ospf network broadcast
+no ip ospf passive
+ip ospf authentication
+ip ospf authentication-key password
+exit
+
+do write - САМОЕ ГЛАВНОЕ, ОНА СОХРАНЯЕТ КОНФИГ. БЕЗ НЕЕ БУДЕТ СБРОС ВЫШЕУПОМЯНУТЫХ КОМАНД. (do write надо делать ещё в frr)
+
+Выходим из frr командой exit и перезапускаем службу systemctl restart frr
+
+BR-RTR 
+
+Устанавливаем, при необходимости, frr.
+apt install frr -y
+
+Далее, включаем OSPF, поменяв значение "no" на "yes".
+nano /etc/frr/daemons
+
+ospfd=no , сделать ospfd=yes
+
+Добавляем frr в автозагрузку.
+systemctl enable frr
+
+Перезагружаем frr.
+systemctl restart frr
+
+Зайдем в frr, введя команду vtysh. Далее, переходим в conf t, пропишем ip forwarding и затем в router ospf. Прописываем следующие команды:
+
+passive-interface default
+network 192.168.1.0/28 area 0
+network 10.10.0.0/30 area 0
+area 0 authentication
+exit
+interface tun1
+no ip ospf network broadcast
+no ip ospf passive
+ip ospf authentication
+ip ospf authentication-key password
+exit
+
+do write - САМОЕ ГЛАВНОЕ, ОНА СОХРАНЯЕТ КОНФИГ. БЕЗ НЕЕ БУДЕТ СБРОС ВЫШЕУПОМЯНУТЫХ КОМАНД. (do write надо делать ещё в frr)
+
+Выходим из frr командой exit и перезапускаем службу systemctl restart frr
+Проверка. Пингуем BR-SRV с HQ-SRV.
+
+
+HQ-RTR
+
+# Устанавливаем DHCP сервер, при необходимости:
+apt install isc-dhcp-server -y
+
+# Переходим в nano /etc/default/isc-dhcp-server и в строчке INTERFACESv4= прописываем интерфейс, ens224:1
+
+# Далее, переходим в nano /etc/dhcp/dhcpd.conf, комментируем все белые строки и прописываем следующее.
+
+subnet 192.168.200.0 netmask 255.255.255.240 {
+    range 192.168.200.4 192.168.200.14;
+    option domain-name-servers 192.168.100.2;
+    option domain-name "au-team.irpo";
+    option routers 192.168.200.1;
+    default-lease-time 600;
+    max-lease-time 7200;
+}
+
+Перезагружаем службу systemctl restart isc-dhcp-server и проверяем статус, в случае если не было ошибки о неудачном запуске DHCP, systemctl status isc-dhcp-server. 
+Видим зеленую строку active (running), служба запущена.
+Проверим выдачу ip-адреса на HQ-CLI. Перейдем в терминал, заходим на root su root, пишем systemctl restart networking и проверяем ip-адрес: ip -br -c a
+❗❗❗ МОЖЕТ ВЫДАВАТЬСЯ IP ЕЩЁ И НА HQ-SRV, ПРОВЕРЬТЕ ЧТОБЫ НЕ БЫЛО 2 АДРЕСА, ПЕРЕЗАПУСТИЕ NETWORKING НА HQ-SRV ❗❗❗
+
+
+HQ-SRV
+
+Скачиваем пакет bind9
+apt install bind9 dnsutils -y
+
+nano /etc/bind/named.conf.default-zones
+
+zone "au-team.irpo" {
+    type master;
+    file "/etc/bind/au-team.irpo";
+};
+
+zone "100.168.192.in-addr.arpa" {
+    type master;
+    file "/etc/bind/au-team.irpo_obr";
+};
+
+zone "200.168.192.in-addr.arpa" {
+    type master;
+    file "/etc/bind/au-team.irpo_hqobr";
+};
+
+cp /etc/bind/db.local /etc/bind/au-team.irpo
+cp /etc/bind/db.127 /etc/bind/au-team.irpo_obr
+cp /etc/bind/db.127 /etc/bind/au-team.irpo_hqobr
+
+nano /etc/bind/au-team.irpo
+$TTL    604800
+@       IN      SOA     au-team.irpo. root.au-team.irpo. (
+                              2         ; Serial
+                         604800         ; Refresh
+                          86400         ; Retry
+                        2419200         ; Expire
+                         604800 )       ; Negative Cache TTL
+;
+@       IN      NS      hq-srv.au-team.irpo.
+hq-srv  IN      A       192.168.100.1
+hq-rtr  IN      A       192.168.100.2
+hq-cli  IN      A       192.168.200.2
+br-rtr  IN      A       192.168.1.1
+br-srv  IN      A       192.168.1.2
+moodle  IN      CNAME   hq-rtr.au-team.irpo.
+wiki    IN      CNAME   hq-rtr.au-team.irpo.
+
+nano /etc/bind/au-team.irpo_obr
+$TTL    604800
+@       IN      SOA     au-team.irpo. root.au-team.irpo. (
+                              1         ; Serial
+                         604800         ; Refresh
+                          86400         ; Retry
+                        2419200         ; Expire
+                         604800 )       ; Negative Cache TTL
+;
+@       IN      NS      au-team.irpo.
+1       IN      PTR     hq-rtr.au-team.irpo.
+2       IN      PTR     hq-srv.au-team.irpo.
+
+nano /etc/bind/au-team.irpo_hqobr
+$TTL    604800
+@       IN      SOA     au-team.irpo. root.au-team.irpo. (
+                              1         ; Serial
+                         604800         ; Refresh
+                          86400         ; Retry
+                        2419200         ; Expire
+                         604800 )       ; Negative Cache TTL
+;
+@       IN      NS      au-team.irpo.
+2       IN      PTR     hq-cli.au-team.irpo.
+
+systemctl restart bind9
+
+
+isp
+ip route add 192.168.1.0/28 via 172.16.2.2
+ip route add 192.168.100.0/27 via 172.16.1.2
+ip route add 192.168.200.0/28 via 172.16.1.2
