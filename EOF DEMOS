@@ -1,0 +1,579 @@
+Подготовка (общая для всех машин, кроме ISP)
+
+Этот блок нужно выполнить на HQ-RTR, HQ-SRV, HQ-CLI, BR-RTR, BR-SRV.
+
+cp /etc/apt/sources.list /etc/apt/sources.list.bak
+sed -i 's/^deb cdrom/#deb cdrom/' /etc/apt/sources.list
+
+cp /etc/resolv.conf /etc/resolv.conf.bak
+cat <<EOF > /etc/resolv.conf
+nameserver 8.8.8.8
+EOF
+
+apt update
+
+ISP
+hostnamectl set-hostname isp.au-team.irpo
+timedatectl set-timezone Asia/Tomsk
+newgrp
+
+HQ-RTR
+hostnamectl set-hostname hq-rtr.au-team.irpo
+timedatectl set-timezone Asia/Tomsk
+newgrp
+
+HQ-SRV
+hostnamectl set-hostname hq-srv.au-team.irpo
+timedatectl set-timezone Asia/Tomsk
+newgrp
+
+HQ-CLI
+hostnamectl set-hostname hq-cli.au-team.irpo
+timedatectl set-timezone Asia/Tomsk
+newgrp
+
+BR-RTR
+hostnamectl set-hostname br-rtr.au-team.irpo
+timedatectl set-timezone Asia/Tomsk
+newgrp
+
+BR-SRV
+hostnamectl set-hostname br-srv.au-team.irpo
+timedatectl set-timezone Asia/Tomsk
+newgrp
+
+
+
+
+ЗАДАНИЕ 1: Настройка сети
+
+
+ISP
+cat <<EOF > /etc/network/interfaces
+auto lo
+iface lo inet loopback
+
+auto ens192
+iface ens192 inet dhcp
+
+auto ens224
+iface ens224 inet static
+address 172.16.10.1/28
+
+auto ens256
+iface ens256 inet static
+address 172.16.20.1/28
+EOF
+systemctl restart networking
+
+
+HQ-RTR
+cat <<EOF > /etc/network/interfaces
+auto ens192
+iface ens192 inet static
+address 172.16.10.2/28
+gateway 172.16.10.1
+
+auto ens224
+iface ens224 inet static
+address 192.168.111.1/27
+
+auto ens224:1
+iface ens224:1 inet static
+address 192.168.211.1/28
+
+auto ens224:2
+iface ens224:2 inet static
+address 192.168.81.1/29
+
+auto ens224.111
+iface ens224.111 inet manual
+vlan-raw-device ens224
+
+auto ens224.211
+iface ens224.211 inet manual
+vlan-raw-device ens224:1
+
+auto ens224.811
+iface ens224.811 inet manual
+vlan-raw-device ens224:2
+
+allow-hotplug tun1
+iface tun1 inet tunnel
+address 10.10.0.1
+netmask 255.255.255.252
+mode gre
+local 172.16.10.2
+endpoint 172.16.20.2
+ttl 64
+EOF
+systemctl restart networking
+
+
+BR-RTR
+cat <<EOF > /etc/network/interfaces
+auto ens192
+iface ens192 inet static
+address 172.16.20.2/28
+gateway 172.16.20.1
+
+auto ens224
+iface ens224 inet static
+address 192.168.1.1/28
+
+allow-hotplug tun1
+iface tun1 inet tunnel
+address 10.10.0.2
+netmask 255.255.255.252
+mode gre
+local 172.16.20.2
+endpoint 172.16.10.2
+ttl 64
+EOF
+systemctl restart networking
+
+
+HQ-SRV
+auto ens192
+iface ens192 inet static
+address 192.168.111.2/27
+gateway 192.168.111.1
+EOF
+systemctl restart networking
+
+
+BR-SRV
+cat <<EOF > /etc/network/interfaces
+auto ens192
+iface ens192 inet static
+address 192.168.1.2/28
+gateway 192.168.1.1
+EOF
+systemctl restart networking
+
+
+
+
+
+ЗАДАНИЕ 2: NAT и форвардинг
+
+ISP, HQ-RTR, BR-RTR
+cat <<EOF > /etc/nftables.conf
+flush ruleset
+
+table inet filter {
+	chain input {
+		type filter hook input priority filter;
+	}
+	chain forward {
+		type filter hook forward priority filter;
+	}
+	chain output {
+		type filter hook output priority filter;
+	}
+}
+
+table inet nat {
+	chain POSTROUTING {
+	type nat hook postrouting priority srcnat;
+	oifname "ens192" masquerade
+	}
+}
+EOF
+
+systemctl enable nftables
+systemctl start nftables
+
+# Включаем IP Forwarding
+sed -i 's/#net.ipv4.ip_forward=1/net.ipv4.ip_forward=1/' /etc/sysctl.conf
+sysctl -p
+
+
+
+
+
+
+ЗАДАНИЕ 3: Пользователи
+
+HQ-SRV и BR-SRV
+
+useradd sshuser -u 2011 -U
+echo 'sshuser:P@ssw0rd' | chpasswd
+mkhomedir_helper sshuser
+echo 'sshuser ALL=(ALL) NOPASSWD: ALL' | tee -a /etc/sudoers
+
+HQ-RTR и BR-RTR
+
+useradd net_admin
+echo 'net_admin:P@ssw0rd' | chpasswd
+mkhomedir_helper net_admin
+echo 'net_admin ALL=(ALL) NOPASSWD: ALL' | tee -a /etc/sudoers
+
+
+
+
+
+
+
+
+ЗАДАНИЕ 4: FRR (OSPF)
+
+HQ-RTR и BR-RTR (Общая часть)
+apt install frr -y
+sed -i 's/ospfd=no/ospfd=yes/' /etc/frr/daemons
+systemctl enable frr
+
+HQ-RTR (Конфигурация FRR)
+
+cat <<EOF > /etc/frr/frr.conf
+frr version 8.4.4
+frr defaults traditional
+hostname hq-rtr.au-team.irpo
+log syslog informational
+no ipv6 forwarding
+service integrated-vtysh-config
+!
+interface tun1
+  ip ospf authentication
+  ip ospf authentication-key P@ssw0rd
+  no ip ospf passive
+exit
+!
+router ospf
+  passive-interface default
+  network 10.10.0.0/30 area 0
+  network 192.168.111.0/27 area 0
+  network 192.168.211.0/28 area 0
+  network 192.168.81.0/29 area 0
+  area 0 authentication
+exit
+!
+EOF
+systemctl restart frr
+
+
+BR-RTR (Конфигурация FRR)
+
+cat <<EOF > /etc/frr/frr.conf
+frr version 8.4.4
+frr defaults traditional
+hostname br-rtr.au-team.irpo
+log syslog informational
+no ipv6 forwarding
+service integrated-vtysh-config
+!
+interface tun1
+  ip ospf authentication
+  ip ospf authentication-key P@ssw0rd
+  no ip ospf passive
+exit
+!
+router ospf
+  passive-interface default
+  network 10.10.0.0/30 area 0
+  network 192.168.1.0/28 area 0
+  area 0 authentication
+exit
+!
+EOF
+systemctl restart frr
+
+
+
+
+
+ЗАДАНИЕ 5: Стенд (SSH, DHCP, DNS, Chrony)
+
+HQ-RTR и BR-RTR (Visudo)
+
+echo 'net_admin  ALL=(ALL:ALL)  ALL' | tee -a /etc/sudoers
+echo 'sshuser  ALL=(ALL:ALL)  ALL' | tee -a /etc/sudoers
+
+
+HQ-SRV и BR-SRV (SSH)
+
+echo 'Authorized Access Only' > /etc/banner_ssh
+cat <<EOF >> /etc/ssh/sshd_config
+
+Port 2011
+AllowUsers sshuser
+Banner /etc/banner_ssh
+MaxAuthTries 2
+EOF
+systemctl restart ssh
+
+
+HQ-RTR (DHCP)
+
+apt install isc-dhcp-server -y
+sed -i 's/INTERFACESv4=""/INTERFACESv4="ens224:1"/' /etc/default/isc-dhcp-server
+
+cat <<EOF > /etc/dhcp/dhcpd.conf
+subnet 192.168.211.0 netmask 255.255.255.240 {
+    range 192.168.211.4 192.168.211.14;
+    option domain-name-servers 192.168.111.2;
+    option domain-name "au-team.irpo";
+    option routers 192.168.211.1;
+    default-lease-time 600;
+    max-lease-time 7200;
+}
+EOF
+systemctl restart isc-dhcp-server
+
+
+HQ-SRV (DNS)
+
+apt install bind9 dnsutils -y
+
+cat <<EOF > /etc/bind/named.conf.options
+options {
+    listen-on port 53 { any; };
+    listen-on-v6 port 53 { any; };
+    directory "/var/cache/bind";
+    allow-query { any; };
+    allow-recursion { any; };
+    forwarders { 77.88.8.7; 1.1.1.1; };
+    forward only;
+    dnssec-validation no;
+};
+EOF
+
+cat <<EOF >> /etc/bind/named.conf.default-zones
+
+zone "au-team.irpo" {
+    type master;
+    file "/etc/bind/au-team.irpo";
+};
+
+zone "111.168.192.in-addr.arpa" {
+    type master;
+    file "/etc/bind/au-team.irpo_obr";
+};
+
+zone "211.168.192.in-addr.arpa" {
+    type master;
+    file "/etc/bind/au-team.irpo_hqobr";
+};
+EOF
+
+cp /etc/bind/db.local /etc/bind/au-team.irpo
+cp /etc/bind/db.127 /etc/bind/au-team.irpo_obr
+cp /etc/bind/db.127 /etc/bind/au-team.irpo_hqobr
+
+cat <<EOF > /etc/bind/au-team.irpo
+\$TTL    604800
+@       IN      SOA     au-team.irpo. root.au-team.irpo. (
+                              2         ; Serial
+                         604800         ; Refresh
+                          86400         ; Retry
+                        2419200         ; Expire
+                         604800 )       ; Negative Cache TTL
+;
+@       IN      NS      hq-srv.au-team.irpo.
+hq-srv  IN      A       192.168.111.2
+hq-rtr  IN      A       192.168.111.1
+hq-cli  IN      A       192.168.211.4
+br-rtr  IN      A       192.168.1.1
+br-srv  IN      A       192.168.1.2
+docker  IN      A       172.16.10.1
+web     IN      A       172.16.20.1
+EOF
+
+cat <<EOF > /etc/bind/au-team.irpo_obr
+\$TTL    604800
+@       IN      SOA     au-team.irpo. root.au-team.irpo. (
+                              1         ; Serial
+                         604800         ; Refresh
+                          86400         ; Retry
+                        2419200         ; Expire
+                         604800 )       ; Negative Cache TTL
+;
+@       IN      NS      au-team.irpo.
+1       IN      PTR     hq-rtr.au-team.irpo.
+2       IN      PTR     hq-srv.au-team.irpo.
+EOF
+
+cat <<EOF > /etc/bind/au-team.irpo_hqobr
+\$TTL    604800
+@       IN      SOA     au-team.irpo. root.au-team.irpo. (
+                              1         ; Serial
+                         604800         ; Refresh
+                          86400         ; Retry
+                        2419200         ; Expire
+                         604800 )       ; Negative Cache TTL
+;
+@       IN      NS      au-team.irpo.
+2       IN      PTR     hq-cli.au-team.irpo.
+EOF
+
+systemctl restart bind9
+
+
+ISP (Chrony Server)
+
+apt install chrony -y
+sed -i 's/^pool 2.debian.pool.ntp.org iburst/#pool 2.debian.pool.ntp.org iburst/' /etc/chrony/chrony.conf
+cat <<EOF >> /etc/chrony/chrony.conf
+server 127.0.0.1 iburst prefer
+local stratum 6
+allow 0/0
+EOF
+systemctl restart chrony
+
+
+Все машины кроме ISP (Chrony Client)
+
+apt install chrony -y
+sed -i 's/^pool 2.debian.pool.ntp.org iburst/#pool 2.debian.pool.ntp.org iburst/' /etc/chrony/chrony.conf
+echo 'server 172.16.10.1 iburst' >> /etc/chrony/chrony.conf
+systemctl restart chrony
+
+
+RAID и NFS
+
+apt install mdadm nfs-kernel-server -y
+mdadm --create --verbose /dev/md1 -l 5 -n 3 /dev/sd{b,c,d}
+mdadm --detail --scan | tee /etc/mdadm.conf
+update-initramfs -u
+mkfs.ext4 /dev/md1
+mkdir /raid5
+mount /dev/md1 /raid5
+echo '/dev/md1 /raid5 ext4 defaults 0 0' | tee -a /etc/fstab
+
+mkdir /raid5/nfs
+chmod 777 /raid5/nfs
+echo '/raid5/nfs 192.168.211.0/28(rw,sync,no_subtree_check)' | tee -a /etc/exports
+systemctl restart nfs-kernel-server
+
+HQ-CLI (NFS Client)
+
+apt install nfs-common -y
+mkdir /mnt/nfs
+echo '192.168.111.2:/raid5/nfs /mnt/nfs nfs defaults 0 0' | tee -a /etc/fstab
+systemctl daemon-reload
+mount -a
+
+
+
+
+Ansible
+
+BR-SRV
+
+apt install ansible -y
+
+ssh-keygen -t rsa -N "" -f ~/.ssh/id_rsa
+
+ssh-copy-id -p 2011 sshuser@192.168.111.2
+ssh-copy-id locadm@192.168.211.4
+ssh-copy-id net_admin@172.16.10.2
+ssh-copy-id net_admin@172.16.20.2
+
+mkdir -p /etc/ansible
+cat <<EOF > /etc/ansible/demo
+[hq]
+192.168.111.2 ansible_port=2011 ansible_user=sshuser
+192.168.211.4 ansible_user=locadm
+172.16.10.2 ansible_user=net_admin
+
+[br]
+172.16.20.2 ansible_user=net_admin
+
+[all:vars]
+ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
+ansible_python_interpreter=/usr/bin/python3
+EOF
+
+ansible all -i /etc/ansible/demo -m ping
+
+
+
+Яндекс Браузер на HQ-CLI
+
+переходим по ссылке https://browser.yandex.com и устанавливаем .deb пакет
+
+в браузере пкм по файлу и жмем Показать в папке, далее распаковываем файл , по распокованному вайлу жмем пкм открыть в терминале переходи в директорию Загрузки
+
+и в терминале вводим
+
+apt install ./Yandex.deb
+
+
+
+
+
+
+Samba DC (Контроллер домена)
+
+BR-SRV
+
+
+apt install samba smbclient winbind krb5-config -y
+
+# Преднастройка kerberos
+cat <<EOF > /etc/krb5.conf
+[libdefaults]
+	default_realm = AU-TEAM.IRPO
+	dns_lookup_realm = false
+	dns_lookup_kdc = true
+EOF
+
+systemctl stop samba-ad-dc smbd nmbd winbind 2>/dev/null
+systemctl disable samba-ad-dc smbd nmbd winbind 2>/dev/null
+mv /etc/samba/smb.conf /etc/samba/smb.conf.bak
+
+# Создание домена (интерактивный режим заменён флагами)
+samba-tool domain provision --use-rfc2307 \
+    --realm=AU-TEAM.IRPO \
+    --domain=AU-TEAM \
+    --server-role=dc \
+    --dns-backend=SAMBA_INTERNAL \
+    --adminpass='P@ssw0rd' \
+    --dns-forwarder=192.168.111.2
+
+cp /var/lib/samba/private/krb5.conf /etc/krb5.conf
+systemctl unmask samba-ad-dc
+systemctl enable samba-ad-dc
+systemctl start samba-ad-dc
+
+# Настройка пользователей и групп
+samba-tool group add hq
+for i in 1 2 3 4 5; do
+    samba-tool user create hquser$i P@ssw0rd
+    samba-tool group addmembers hq hquser$i
+done
+
+# Restricted Shell для группы hq (настраивается далее)
+mkdir -p /usr/local/bin/restricted
+ln -sf /usr/bin/cat /usr/local/bin/restricted/cat
+ln -sf /usr/bin/grep /usr/local/bin/restricted/grep
+ln -sf /usr/bin/id /usr/local/bin/restricted/id
+
+cat <<EOF > /usr/local/bin/restricted_shell.sh
+#!/bin/bash
+export PATH="/usr/local/bin/restricted"
+exec /bin/rbash
+EOF
+chmod +x /usr/local/bin/restricted_shell.sh
+
+echo "Готово. Добавьте restricted_shell.sh как оболочку для пользователей группы hq в ADUC или через samba-tool."
+
+
+HQ-CLI (Ввод в домен)
+
+apt install realmd sssd sssd-tools adcli packagekit samba-common-bin -y
+
+# DNS должен указывать на оба DNS-сервера
+cat <<EOF > /etc/resolv.conf
+search au-team.irpo
+nameserver 192.168.111.2
+nameserver 192.168.1.2
+EOF
+
+# Ввод в домен (пароль будет запрошен)
+realm join AU-TEAM.IRPO -U Administrator
+
+
+
+
+
