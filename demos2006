@@ -732,27 +732,8 @@ ansible all -i /etc/ansible/demo -m ping
 
 Яндекс Браузер на HQ-CLI
 
-apt search yandex
+переходим по ссылке apt install yandex-browser-stable -y и устанавливаем .deb пакет
 
-apt install yandex-browser-stable -y
+в терминале вводим
 
-или
-
-Создайте файл для репозитория в терминале с помощью команды:
-
-sudo nano /etc/yum.repos.d/yandex.repo
-
-Вставьте туда следующие строки:
-
-[yandex-browser]
-name=Yandex Browser
-baseurl=http://yandex.ru
-enabled=1
-gpgcheck=1
-gpgkey=https://yandex.ru
-
-apt clean all
-
-apt search yandex
-
-apt install yandex-browser-stable
+apt install ./Yandex.deb
