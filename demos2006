@@ -82,7 +82,7 @@ address 192.168.211.1/28
 
 auto ens224:2
 iface ens224:2 inet static
-address 192.168.811.1/29
+address 192.168.81.1/29
 
 auto ens224.111
 iface ens224.111 inet manual
@@ -114,7 +114,7 @@ gateway 172.16.20.1
 
 auto ens224
 iface ens224 inet static
-address 192.168.1.1/27
+address 192.168.1.1/28
 
 allow-hotplug tun1
 iface tun1 inet tunnel
@@ -136,7 +136,7 @@ BR-SRV
 
 auto ens192
 iface ens192 inet static
-address 192.168.1.2/27
+address 192.168.1.2/28
 gateway 192.168.1.1
 ############################################################################################
 ЗАДАНИЕ 2: 
@@ -269,7 +269,7 @@ systemctl restart frr
 passive-interface default
 network 192.168.111.0/27 area 0
 network 192.168.211.0/28 area 0
-network 192.168.811.0/29 area 0
+network 192.168.81.0/29 area 0
 network 10.10.0.0/30 area 0
 area 0 authentication
 exit
@@ -323,6 +323,61 @@ exit
 do write - САМОЕ ГЛАВНОЕ, ОНА СОХРАНЯЕТ КОНФИГ. БЕЗ НЕЕ БУДЕТ СБРОС ВЫШЕУПОМЯНУТЫХ КОМАНД. (do write надо делать ещё в frr)
 
 Выходим из frr командой exit и перезапускаем службу systemctl restart frr
+
+или
+
+HQ-RTR
+
+nano /etc/frr/frr.conf все удалить и вставить:
+
+frr version 8.4.4
+frr defaults traditional
+hostname hq-rtr.au-team.irpo
+log syslog informational
+no ipv6 forwarding
+service integrated-vtysh-config
+!
+interface tun1
+  ip ospf authentication
+  ip ospf authentication-key P@ssw0rd
+  no ip ospf passive
+exit
+!
+router ospf
+  passive-interface default
+  network 10.10.0.0/30 area 0
+  network 192.168.111.0/27 area 0
+  network 192.168.211.0/28 area 0
+  network 192.168.81.0/29 area 0
+  area 0 authentication
+exit
+!
+
+2 вариант настройки для BR-RTR
+
+nano /etc/frr/frr.conf все удалить и вставить:
+
+frr version 8.4.4
+frr defaults traditional
+hostname br-rtr.au-team.irpo
+log syslog informational
+no ipv6 forwarding
+service integrated-vtysh-config
+!
+interface tun1
+  ip ospf authentication
+  ip ospf authentication-key P@ssw0rd
+  no ip ospf passive
+exit
+!
+router ospf
+  passive-interface default
+  network 10.10.0.0/30 area 0
+  network 192.168.1.0/28 area 0
+  area 0 authentication
+exit
+!
+
 Проверка. Пингуем BR-SRV с HQ-SRV.
 
 ping 192.168.1.2          # BR-SRV
