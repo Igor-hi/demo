@@ -134,6 +134,8 @@ systemctl restart networking
 
 
 HQ-SRV
+cat <<EOF > /etc/network/interfaces
+
 auto ens192
 iface ens192 inet static
 address 192.168.111.2/27
