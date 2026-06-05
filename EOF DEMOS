@@ -161,6 +161,7 @@ systemctl restart networking
 
 ISP, HQ-RTR, BR-RTR
 cat <<EOF > /etc/nftables.conf
+#!/usr/sbin/nft -f
 flush ruleset
 
 table inet filter {
